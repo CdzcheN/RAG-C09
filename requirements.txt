@@ -1,0 +1,55 @@
+# 课题 C09 依赖清单 —— Ubuntu / Windows 通用
+#
+# 用法（两个平台同一条命令；Windows 请在 "Anaconda Prompt" 中执行）：
+#   conda create -n rag-c09 python=3.10 -y
+#   conda activate rag-c09
+#   python -m pip install -U pip
+#   python -m pip install -r requirements.txt
+#
+# 本文件是依赖的唯一来源（不使用 environment.yml）：跨平台差异全部在此说明。
+#
+# 跨平台注意事项
+#   1) torch / torchvision 只写公共版本号，**不要**写 `+cu128` 这类本地版本号
+#      （PyPI 上没有该版本号，会直接安装失败）。PyPI 的 Linux 与 Windows 轮子
+#      本身就是 CUDA 构建：Linux 会另外拉取 nvidia-*-cu12 运行时轮子，
+#      Windows 的 CUDA 运行时随轮子内置。
+#   2) 因此本文件**不列** nvidia-*-cu12（Linux 专用）与 triton（无 Windows 轮子），
+#      它们由 torch 按平台自动解析；显式写死会导致另一个平台安装失败。
+#   3) 国内网络未配置镜像时，可加：-i https://pypi.tuna.tsinghua.edu.cn/simple
+#   4) 需要显式指定 CUDA 版本时（两个平台通用）：
+#      python -m pip install torch==2.10.0 torchvision==0.25.0 --index-url https://download.pytorch.org/whl/cu128
+#   5) 三个锚点包（见下）必须全组一致，否则浮点结果不同、指标不可比。
+
+# —— 数值锚点：必须全组一致（== 固定）——
+torch==2.10.0
+torchvision==0.25.0
+numpy==2.2.6
+
+# —— 生成与检索 ——
+transformers>=4.56
+sentence-transformers>=3.0
+datasets>=2.20
+huggingface_hub>=0.24
+sentencepiece>=0.2.0
+accelerate>=1.0
+rank_bm25>=0.2.2
+
+# —— 数据与统计 ——
+pyarrow>=17.0
+pandas>=2.2
+scipy>=1.13
+scikit-learn>=1.5
+PyYAML>=6.0
+tabulate>=0.9
+
+# —— 绘图 ——
+matplotlib>=3.9
+
+# —— 工具 ——
+tqdm>=4.66
+requests>=2.31
+
+# —— 可选（按需取消注释）——
+# faiss-cpu>=1.9        # 稠密检索索引；与 numpy 2.x 冲突时放弃，改用 sentence-transformers 的内存检索
+# bitsandbytes>=0.45    # 1.5B 模型 4-bit 量化；Windows 支持有限，建议优先在 Ubuntu 上跑
+# python-docx>=1.1      # 仅生成/更新 docx 报告时需要（scripts/md2docx.py），不参与实验
