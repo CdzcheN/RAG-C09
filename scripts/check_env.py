@@ -43,9 +43,9 @@ IMPORT_NAME = {
 }
 
 try:
-    from packaging.version import Version
+    from packaging.specifiers import SpecifierSet
 except ImportError:  # 无 packaging 时退化为字符串比较
-    Version = None
+    SpecifierSet = None
 
 
 class Check:
@@ -70,28 +70,36 @@ class Check:
             print(f"[{status:^4}] {item:<{width}}  {detail}")
 
 
-def parse_requirements(path: Path) -> list[tuple[str, str, str]]:
-    """解析 requirements.txt，返回 [(包名, 操作符, 版本)]；只取 == 与 >= 两类。"""
-    out: list[tuple[str, str, str]] = []
+def parse_requirements(path: Path) -> list[tuple[str, str]]:
+    """解析 requirements.txt，返回 [(包名, 约束串)]。
+
+    约束串按 pip 原样保留，支持 `>=1.5,<2` 这类组合约束（早期版本只认 `==`/`>=`，
+    会把 `5.17,<6` 整体当成版本号，导致合法版本被误判为不满足）。
+    """
+    out: list[tuple[str, str]] = []
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.split("#", 1)[0].strip()
         if not line:
             continue
-        m = re.match(r"^([A-Za-z0-9_.\-]+)\s*(==|>=)\s*([^\s;]+)$", line)
-        if m:
-            out.append((m.group(1), m.group(2), m.group(3)))
+        # 形如：包名 / 包名==1.2.3 / 包名>=1.0,<2 / 包名[extra]>=1.0；分号后的环境标记忽略
+        m = re.match(r"^([A-Za-z0-9_.\-]+)(?:\[[^\]]*\])?\s*([<>=!~][^;]*)?$", line)
+        if m and m.group(2):
+            out.append((m.group(1), m.group(2).strip()))
     return out
 
 
-def version_ok(got: str, op: str, want: str) -> bool:
-    if Version is None:  # 退化路径
-        return got.split("+")[0] == want
+def version_ok(got: str, spec: str) -> bool:
+    """按 PEP 440 判断已安装版本是否满足约束串。
+
+    说明：`==2.10.0` 能匹配 `2.10.0+cu128`（PEP 440 规定未写 local 段时忽略 local），
+    因此 torch 的 `+cu128` 本地版本号不会造成误判。
+    """
+    if SpecifierSet is None:  # 退化路径
+        return any(got.split("+")[0].startswith(p) for p in re.findall(r"\d+(?:\.\d+)*", spec))
     try:
-        g, w = Version(got), Version(want)
+        return SpecifierSet(spec).contains(got, prereleases=True)
     except Exception:
         return False
-    # 忽略本地版本段：torch 2.10.0+cu128 与要求的 2.10.0 视为同一公共版本
-    return g.public == w.public if op == "==" else g >= w
 
 
 def check_environment(c: Check) -> None:
@@ -126,7 +134,7 @@ def check_requirements(c: Check, allow_missing: bool) -> None:
     c.add("OK", "requirements.txt", f"解析到 {len(specs)} 条依赖")
 
     missing: list[str] = []
-    for pkg, op, want in specs:
+    for pkg, spec in specs:
         mod = IMPORT_NAME.get(pkg, pkg.replace("-", "_"))
         if util.find_spec(mod) is None:
             missing.append(pkg)
@@ -135,10 +143,10 @@ def check_requirements(c: Check, allow_missing: bool) -> None:
             got = metadata.version(pkg)
         except metadata.PackageNotFoundError:
             got = getattr(__import__(mod), "__version__", "unknown")
-        if version_ok(got, op, want):
-            c.add("OK", f"依赖 {pkg}", f"{got}（要求 {op}{want}）")
+        if version_ok(got, spec):
+            c.add("OK", f"依赖 {pkg}", f"{got}（要求 {spec}）")
         else:
-            c.add("FAIL", f"依赖 {pkg}", f"{got} 不满足 {op}{want}", fatal=True)
+            c.add("FAIL", f"依赖 {pkg}", f"{got} 不满足 {spec}", fatal=True)
 
     if missing:
         c.add(
