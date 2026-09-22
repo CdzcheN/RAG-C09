@@ -1,0 +1,22 @@
+# 幻觉判别器与评估设置（见 docs/实验与评估规范.md）
+feature_groups:
+  semantic: [entailment_max, entailment_mean, contradiction_max]
+  overlap: [overlap_em, overlap_f1, citation_cov]
+  conflict: [conflict_count, retrieval_top_score]
+
+baselines:
+  random: []                     # B0：下界参照
+  self_confidence: [baseline_confidence]   # B1：主基线
+  overlap_only: [overlap_f1]     # B2：浅层重叠
+
+classifiers: [logreg, gbdt, mlp]
+cv_folds: 5
+threshold: 0.5                   # 同时报告校准后的最优阈值
+calibration: [none, platt, temperature]
+
+significance:
+  alpha: 0.05
+  tests: [ttest_rel, wilcoxon]   # 配对 t 与 Wilcoxon 都报
+
+target:
+  auc_gain_over_baseline: 0.10   # 课题量化目标

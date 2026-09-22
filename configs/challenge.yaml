@@ -1,0 +1,21 @@
+# 挑战子集构造参数（见 docs/数据构造规范.md）
+n_base_per_type: 50        # 每类基样本数 → 污染版 + 对照版 = 100 例/类，合计 300 例
+data_seed_base: 1000       # 构造种子基，独立于模型种子 [13, 42, 2024]
+
+operators:
+  retrieval_failure:
+    n_replace: 2
+    distractor_pool: native      # 使用 HotpotQA distractor 自带的干扰文
+    min_lexical_overlap: 0.2     # 干扰段与问题的最小词面重叠，避免干扰过弱
+  evidence_conflict:
+    slot_type: [person, date, number, place]
+    n_inject: 1
+    inject_position: middle      # 中部注入（依据位置敏感性结论）
+  outdated:
+    time_gap_years: 2
+
+outputs:
+  challenge: data/processed/challenge_set.jsonl
+  normal: data/processed/normal_set.jsonl
+  construct_log: data/processed/construct_log.json
+  audit: results/metrics/construct_audit.csv
