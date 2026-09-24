@@ -1,0 +1,15 @@
+# —— Python ——
+__pycache__/
+*.py[cod]
+
+# —— 工具 / 会话目录 ——
+.reasonix/
+
+# —— 数据 ——
+# 原始数据体量大且可重新获取，不入库；获取方式与校验见 data/README.md
+# （对应 项目资料/项目启动与实施指南.md §14「仓库结构」中 data/raw 不提交的约定）
+data/raw/
+
+# —— 下载残片（网络中断时的临时文件）——
+*.part
+*.incomplete

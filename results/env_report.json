@@ -1,0 +1,154 @@
+{
+  "sys_prefix": "/home/chen/miniconda3/envs/rag-c09",
+  "env_name": "rag-c09",
+  "python": "3.10.21",
+  "platform": "Linux-6.8.0-124-generic-x86_64-with-glibc2.39",
+  "checks": [
+    {
+      "status": "OK",
+      "item": "环境归属",
+      "detail": "conda 环境 rag-c09：/home/chen/miniconda3/envs/rag-c09"
+    },
+    {
+      "status": "OK",
+      "item": "平台",
+      "detail": "Linux 6.8.0-124-generic | Python 3.10.21"
+    },
+    {
+      "status": "OK",
+      "item": "Python",
+      "detail": "3.10.21（要求 3.10.x）"
+    },
+    {
+      "status": "OK",
+      "item": "requirements.txt",
+      "detail": "解析到 19 条依赖"
+    },
+    {
+      "status": "OK",
+      "item": "依赖 torch",
+      "detail": "2.10.0（要求 ==2.10.0）"
+    },
+    {
+      "status": "OK",
+      "item": "依赖 torchvision",
+      "detail": "0.25.0（要求 ==0.25.0）"
+    },
+    {
+      "status": "OK",
+      "item": "依赖 numpy",
+      "detail": "2.2.6（要求 ==2.2.6）"
+    },
+    {
+      "status": "OK",
+      "item": "依赖 transformers",
+      "detail": "5.17.0（要求 >=5.17,<6）"
+    },
+    {
+      "status": "OK",
+      "item": "依赖 sentence-transformers",
+      "detail": "6.0.1（要求 >=6.0,<7）"
+    },
+    {
+      "status": "OK",
+      "item": "依赖 datasets",
+      "detail": "5.0.1（要求 >=2.20）"
+    },
+    {
+      "status": "OK",
+      "item": "依赖 huggingface_hub",
+      "detail": "1.32.0（要求 >=1.5,<2）"
+    },
+    {
+      "status": "OK",
+      "item": "依赖 sentencepiece",
+      "detail": "0.2.2（要求 >=0.2.0）"
+    },
+    {
+      "status": "OK",
+      "item": "依赖 accelerate",
+      "detail": "1.15.0（要求 >=1.0）"
+    },
+    {
+      "status": "OK",
+      "item": "依赖 rank_bm25",
+      "detail": "0.2.2（要求 >=0.2.2）"
+    },
+    {
+      "status": "OK",
+      "item": "依赖 pyarrow",
+      "detail": "25.0.1（要求 >=17.0）"
+    },
+    {
+      "status": "OK",
+      "item": "依赖 pandas",
+      "detail": "2.3.3（要求 >=2.2）"
+    },
+    {
+      "status": "OK",
+      "item": "依赖 scipy",
+      "detail": "1.15.3（要求 >=1.13）"
+    },
+    {
+      "status": "OK",
+      "item": "依赖 scikit-learn",
+      "detail": "1.7.2（要求 >=1.5）"
+    },
+    {
+      "status": "OK",
+      "item": "依赖 PyYAML",
+      "detail": "6.0.3（要求 >=6.0）"
+    },
+    {
+      "status": "OK",
+      "item": "依赖 tabulate",
+      "detail": "0.10.0（要求 >=0.9）"
+    },
+    {
+      "status": "OK",
+      "item": "依赖 matplotlib",
+      "detail": "3.10.9（要求 >=3.9）"
+    },
+    {
+      "status": "OK",
+      "item": "依赖 tqdm",
+      "detail": "4.70.1（要求 >=4.66）"
+    },
+    {
+      "status": "OK",
+      "item": "依赖 requests",
+      "detail": "2.34.2（要求 >=2.31）"
+    },
+    {
+      "status": "OK",
+      "item": "CUDA 可用",
+      "detail": "CUDA 12.8 | cuDNN 91002"
+    },
+    {
+      "status": "OK",
+      "item": "GPU",
+      "detail": "NVIDIA GeForce RTX 3050 Laptop GPU | 可用显存 3.68 GB | CC [8, 6]"
+    },
+    {
+      "status": "OK",
+      "item": "bf16",
+      "detail": "True"
+    },
+    {
+      "status": "OK",
+      "item": "HF_ENDPOINT",
+      "detail": "https://hf-mirror.com"
+    }
+  ],
+  "torch": "2.10.0+cu128",
+  "cuda_compiled": "12.8",
+  "cudnn": 91002,
+  "cuda_available": true,
+  "gpu": "NVIDIA GeForce RTX 3050 Laptop GPU",
+  "vram_gb": 3.68,
+  "capability": [
+    8,
+    6
+  ],
+  "bf16": true
+}

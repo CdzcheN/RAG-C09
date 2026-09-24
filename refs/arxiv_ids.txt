@@ -1,0 +1,32 @@
+# 课题 C09 参考文献候选清单：<分组> <arXiv ID> <BibTeX key> <简述>
+# 分组 A=RAG 基础与检索   B=幻觉/事实性评估   C=幻觉检测与不确定性   D=一致性、NLI 与基准数据
+# 全部条目均为开放获取（arXiv），PDF 可自由下载用于课题调研。
+A 2005.11401 Lewis2020RAG        RAG 原始论文（课题起步文献 1）
+A 2312.10997 Gao2023RAGSurvey    RAG 综述：范式、检索、生成与评估
+A 1809.09600 Yang2018HotpotQA    HotpotQA 数据集（课题数据来源 2）
+A 1606.05250 Rajpurkar2016SQuAD  SQuAD 数据集（课题起步文献 3）
+A 2104.07567 Shuster2021Retro   检索增强对话可降低幻觉
+A 2302.00093 Shi2023Distracted  无关上下文干扰大模型
+A 2307.03172 Liu2023LostMiddle  长上下文中的"中段丢失"
+A 2212.10509 Trivedi2023IRCoT   检索与思维链交错的多跳问答
+B 2202.03629 Ji2023Survey       幻觉综述（课题起步文献 2）
+B 2204.04991 Honovich2022TRUE   统一复评事实一致性评估指标
+B 2005.00661 Maynez2020Faithful 摘要中的忠实性与事实性
+B 1910.12840 Kryscinski2020Factual 事实一致性评估框架
+B 2109.07958 Lin2022TruthfulQA  TruthfulQA 基准
+B 2305.14251 Min2023FActScore   原子事实精度评估
+B 2305.11747 Li2023HaluEval     幻觉评测基准 HaluEval
+B 2309.15217 Es2023Ragas        RAGAS：无参考的 RAG 自动评估
+B 2309.01431 Chen2023BenchmarkRGB 噪声/拒答/信息整合的 RAG 基准
+C 2303.08896 Manakul2023SelfCheck  SelfCheckGPT 零资源幻觉检测
+C 2304.13734 Azaria2023Internal    隐状态可判断模型是否在说谎
+C 2207.05221 Kadavath2022MostlyKnow 模型自我评估"知道什么"（自评置信度基线）
+C 2401.00396 Niu2024RAGTruth       RAGTruth：RAG 幻觉语料
+C 2112.12870 Rashkin2021Attribution 归因评估（AIS）
+C 2212.08037 Bohnet2022AQA        归因问答评估与建模
+C 2305.13534 Zhang2023Snowball    幻觉"雪球"效应
+C 2310.11511 Asai2023SelfRAG      Self-RAG：自反思的检索与生成
+C 2309.11495 Dhuliawala2023CoVe   验证链（CoVe）降低幻觉
+D 1508.05326 Bowman2015SNLI      SNLI：自然语言推断语料（蕴含概率特征基础）
+D 1704.05426 Williams2018MNLI    MNLI：多类型 NLI 语料
+D 1803.05355 Thorne2018FEVER     FEVER：事实抽取与验证

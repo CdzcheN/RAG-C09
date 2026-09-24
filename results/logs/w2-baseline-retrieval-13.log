@@ -1,0 +1,2 @@
+2026-09-22 19:37:06,922 [INFO] src.retrieval: component=retrieval exp_id=w2-baseline-retrieval-13 seed=13 limit=None dry_run=True
+2026-09-22 19:37:06,923 [INFO] src.retrieval: dry-run：配置与参数检查通过，未执行计算

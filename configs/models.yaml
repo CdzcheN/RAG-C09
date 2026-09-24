@@ -1,0 +1,24 @@
+# 模型选型与显存约束（4 GB 级显卡，见 docs/项目启动与实施指南.md §1.3）
+# 变更任何模型或 dtype 需在周会通报，并在实验记录中登记。
+generator:
+  id: Qwen/Qwen2.5-0.5B-Instruct
+  dtype: float16
+  device: cuda
+  license: Apache-2.0
+  note: 主生成模型；1.5B 备选需 4-bit（bitsandbytes）
+
+nli:
+  id: cross-encoder/nli-deberta-v3-xsmall
+  dtype: float16
+  device: cuda
+  license: MIT
+  note: 备用 -base（约 0.37 GB）
+
+dense_retriever:
+  id: sentence-transformers/all-MiniLM-L6-v2
+  device: cuda
+  enabled: false            # 稠密检索为可选支线
+  license: Apache-2.0
+
+vram_budget_gb: 3.68
+peak_rule: "峰值显存 ≈ 权重 + 0.3 GB 激活与 KV cache"

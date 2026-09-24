@@ -1,0 +1,44 @@
+# 课题 C09 默认配置（超参集中在此，代码内不写魔法数）
+# 用法: python -m <模块>.cli --config configs/default.yaml --seed 13
+seeds: [13, 42, 2024]
+exp_prefix: w2-baseline
+
+paths:
+  data_processed: data/processed
+  results: results
+  logs: results/logs
+
+dataset:
+  squad:
+    id: rajpurkar/squad_v2
+    revision: null          # 固定数据集版本（提交哈希），实验记录中登记
+    splits: [train, validation]
+  hotpotqa:
+    id: hotpotqa/hotpot_qa
+    config: distractor
+    revision: null
+    splits: [train, validation]
+
+sampling:
+  normal_per_dataset: 300   # 常规集每个数据集的抽样条数
+  split_ratio:
+    dev_fit: 0.7            # 判别器训练/调参
+    dev_test: 0.3           # 报告用
+
+retrieval:
+  backend: bm25             # bm25 | dense
+  top_k: 5
+  tokenizer: regex          # 避免 nltk 首次联网下载 punkt
+
+generation:
+  model: Qwen/Qwen2.5-0.5B-Instruct
+  max_new_tokens: 128
+  do_sample: false          # 贪心解码：省显存 + 多种子可复现
+  temperature: 1.0
+  batch_size: 1
+  prompt_template: |
+    Evidence:
+    {evidence}
+
+    Question: {question}
+    Answer:
