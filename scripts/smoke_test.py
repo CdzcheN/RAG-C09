@@ -21,9 +21,11 @@ sys.path.insert(0, str(ROOT))
 from src.common import io, validate  # noqa: E402
 from src.common.schema import FEATURE_COLUMNS, Prediction, RAGSample  # noqa: E402
 
+# 结构自检只列“能不能跑”所依赖的路径：门面文件、配置与代码/脚本入口。
+# docs/ 下的契约与规范文档不列为必需项：src/ 对它们只有 docstring 注释引用，
+# 无任何运行期读取，其存在与否不改变可运行性；文档完整性交由评审与人工检查。
 REQUIRED_PATHS = [
     "README.md", "requirements.txt",
-    "docs/开发文档索引.md", "docs/接口契约.md", "docs/数据构造规范.md", "docs/实验与评估规范.md",
     "configs/default.yaml", "configs/models.yaml", "configs/challenge.yaml", "configs/detect.yaml",
     "src/common/schema.py", "src/common/seeding.py", "src/common/io.py", "src/common/validate.py",
     "src/datasets/challenge_builder.py", "src/retrieval/bm25.py", "src/generation/pipeline.py",
