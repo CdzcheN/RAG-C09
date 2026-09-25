@@ -16,12 +16,15 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import pathlib
 import random
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -397,6 +400,69 @@ class TestCliDryRun(unittest.TestCase):
         proc = subprocess.run([sys.executable, "-m", "src.evaluation.cli"], cwd=ROOT,
                               capture_output=True, text=True, timeout=300, check=False)
         self.assertEqual(proc.returncode, 1, "缺少 --exp-ids 时应返回输入错误码 1")
+
+
+class TestReaderOfflineBehavior(unittest.TestCase):
+    """数据读取的降级与溯源行为：进程内不重复联网、revision 可从 HF 缓存反解（均不真联网）。"""
+
+    def setUp(self) -> None:
+        from src.datasets import reader  # noqa: PLC0415
+
+        self.reader = reader
+        reader.reset_online_state()
+        self._saved = {name: os.environ.get(name)
+                       for name in ("HF_HOME", "C09_OFFLINE", "HF_HUB_OFFLINE", "HF_DATASETS_OFFLINE")}
+        for name in self._saved:
+            os.environ.pop(name, None)
+
+    def tearDown(self) -> None:
+        for name, value in self._saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        self.reader.reset_online_state()
+
+    @staticmethod
+    def _failing_datasets(calls: list) -> types.ModuleType:
+        module = types.ModuleType("datasets")
+
+        def load_dataset(*args, **kwargs):  # noqa: ANN002, ANN003 - 模拟网络中断
+            calls.append(args)
+            raise ConnectionError("Connection reset by peer")
+
+        module.load_dataset = load_dataset  # type: ignore[attr-defined]
+        return module
+
+    def test_online_failure_is_remembered_and_not_retried(self) -> None:
+        calls: list = []
+        with mock.patch.dict(sys.modules, {"datasets": self._failing_datasets(calls)}):
+            first = self.reader.load_dataset_split(self.reader.SQUAD_ID, split="validation")
+            # 第二次若仍联网，桩会抛 ConnectionError；这里应因"已确认离线"直接走本地副本
+            with self.assertRaises(FileNotFoundError):
+                self.reader.load_dataset_split("no-such/dataset", split="validation")
+        self.assertEqual(len(calls), 1, "同一进程内不应重复尝试联网")
+        self.assertEqual(first.origin, "local")
+        self.assertFalse(self.reader.online_available())
+
+    def test_revision_is_resolved_from_hf_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sha = "a" * 40
+            (pathlib.Path(tmp) / "datasets" / "rajpurkar___squad_v2" / "squad_v2" / "0.0.0" / sha).mkdir(
+                parents=True)
+            os.environ["HF_HOME"] = tmp
+            self.assertEqual(self.reader.cached_revision(self.reader.SQUAD_ID, "squad_v2"), sha)
+            os.environ["HF_HOME"] = str(pathlib.Path(tmp) / "empty")
+            self.assertIsNone(self.reader.cached_revision(self.reader.SQUAD_ID, "squad_v2"))
+
+    def test_offline_flag_forces_hf_offline_env(self) -> None:
+        os.environ["C09_OFFLINE"] = "1"
+        self.assertTrue(self.reader.offline_requested())
+        calls: list = []
+        with mock.patch.dict(sys.modules, {"datasets": self._failing_datasets(calls)}):
+            self.reader.load_dataset_split(self.reader.SQUAD_ID, split="validation")
+        self.assertEqual(os.environ.get("HF_HUB_OFFLINE"), "1")
+        self.assertEqual(os.environ.get("HF_DATASETS_OFFLINE"), "1")
 
 
 class TestG1DeterminismContract(unittest.TestCase):

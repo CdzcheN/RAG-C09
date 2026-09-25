@@ -51,7 +51,7 @@ RAG-C09/
 │   ├── detection/           判别器 · 训练 · 概率校准 · 预测
 │   ├── evaluation/          metrics · grouped · significance · tables · plots
 │   └── demo/                演示入口（复用管道实现）
-├── tests/                   unittest 单元测试（overlap / seeding / metrics / contract / end_to_end，共 56 用例）
+├── tests/                   unittest 单元测试（overlap / seeding / metrics / contract / end_to_end，共 64 用例）
 ├── results/                 实验产物（predictions · features · metrics · figures · logs）
 └── scripts/
     ├── check_env.py              环境自检：conda 环境 + requirements.txt（依赖/GPU/镜像）
@@ -143,6 +143,9 @@ python -m src.common.validate features    results/features/w3-pipeline-13.parque
 | 参考文献 | 29 篇开放获取论文 PDF + BibTeX | 标题/作者取自 arXiv API，出版信息取自 OpenAlex 与 ACL Anthology 官方条目 |
 
 > `data/raw/` 下的本地副本与校验记录仅作**离线备选**；数据主路径为代码在线加载（`load_dataset`），见 [`docs/项目启动与实施指南.md`](docs/项目启动与实施指南.md) §1.4。
+> 网络不稳时可设 `C09_OFFLINE=1`（或 `HF_HUB_OFFLINE=1`）让加载直接走 HF 缓存、不发请求；
+> 本进程内一旦在线加载失败，后续加载不再重复等待 huggingface_hub 的指数退避重试；
+> 联网取不到提交哈希时，`dataset_revision` 会从 HF 缓存目录反解（元信息里标 `revision_source=cache`）。
 
 元数据采集做了双重校验（标题完全一致 + 作者姓氏有交集），并由 `build_reference_docs.py` 再做一道
 “ACL 官方条目标题 == arXiv 标题”的交叉校验（当前全部通过）；未匹配到正式出版记录的条目一律

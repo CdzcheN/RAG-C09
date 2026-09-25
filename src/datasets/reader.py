@@ -9,6 +9,13 @@
 离线降级：`datasets` 未安装或联网失败时，改读工作区 `data/raw/` 下的本地副本，并在日志中
 如实记录 `origin="local"`（对应 §1.4 的约定：本地副本仅作离线备选，不是取数主路径）。
 
+网络不稳时的三个行为（避免把时间浪费在 huggingface_hub 的指数退避重试上）：
+1. **进程内失败记忆**：一旦确认在线不可用，同一进程内后续加载直接走本地副本/缓存，不再重复等重试
+   （SQuAD + HotpotQA 两次加载只忍一次网络超时）；
+2. **缓存反解 revision**：联网取不到 `sha` 时，从 `HF_HOME/datasets/{owner}___{name}/{config}/{version}/{sha}`
+   缓存目录反解出上游提交哈希，使契约 §4 的 `dataset_revision` 不为空（并标 `revision_source="cache"`）；
+3. **强制离线**：设 `HF_HUB_OFFLINE=1` 或 `C09_OFFLINE=1` 时直接读缓存，完全不发网络请求。
+
 规范化后的统一结构（供 challenge_builder / split / retrieval 消费）：
 
     {
@@ -29,6 +36,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
 import pathlib
 from typing import Any, Iterator, Mapping, Sequence
 
@@ -63,6 +72,7 @@ class SplitView(Sequence[Mapping[str, Any]]):
 
     def __init__(self, rows: Sequence[Mapping[str, Any]], *, dataset_id: str, config: str | None,
                  split: str, origin: str, revision: str | None = None,
+                 revision_source: str | None = None,
                  local_file: str | None = None, local_sha256: str | None = None) -> None:
         self._rows: list[Mapping[str, Any]] = list(rows)
         self.dataset_id = dataset_id
@@ -70,6 +80,7 @@ class SplitView(Sequence[Mapping[str, Any]]):
         self.split = split
         self.origin = origin
         self.revision = revision
+        self.revision_source = revision_source
         self.local_file = local_file
         self.local_sha256 = local_sha256
 
@@ -93,6 +104,8 @@ class SplitView(Sequence[Mapping[str, Any]]):
                                 "n_rows": len(self._rows)}
         if self.revision:
             info["revision"] = self.revision
+            if self.revision_source:
+                info["revision_source"] = self.revision_source
         if self.local_file:
             info["local_file"] = self.local_file
             info["local_sha256"] = self.local_sha256
@@ -107,18 +120,84 @@ def _sha256(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
-def _hf_revision(dataset_id: str, revision: str | None) -> str | None:
-    """尽力取上游提交哈希；无网络或未装 huggingface_hub 时返回 None（不阻断流程）。"""
+#: 本进程内在线加载失败的原因（非 None 时不再重复联网，避免每次都等 huggingface_hub 重试）
+_ONLINE_FAILURE: dict[str, str | None] = {"reason": None}
+
+#: huggingface_hub 在网络抖动时会刷大量 "Retrying in Ns" 行，降级到 ERROR（不影响我们自己的告警）
+for _noisy in ("huggingface_hub", "huggingface_hub.file_download", "urllib3"):
+    logging.getLogger(_noisy).setLevel(logging.ERROR)
+
+
+def reset_online_state() -> None:
+    """清空"本进程内在线不可用"的记忆（供测试与交互式排查使用）。"""
+    _ONLINE_FAILURE["reason"] = None
+
+
+def online_available() -> bool:
+    """本进程内是否仍会尝试在线加载。"""
+    return _ONLINE_FAILURE["reason"] is None
+
+
+def offline_requested() -> bool:
+    """是否被要求强制离线（`HF_HUB_OFFLINE=1` 或项目自己的 `C09_OFFLINE=1`）。"""
+    return any(os.environ.get(name, "").strip() in ("1", "true", "True", "yes")
+               for name in ("C09_OFFLINE", "HF_HUB_OFFLINE", "HF_DATASETS_OFFLINE"))
+
+
+def _hf_home() -> pathlib.Path:
+    home = os.environ.get("HF_HOME")
+    return pathlib.Path(home) if home else pathlib.Path.home() / ".cache" / "huggingface"
+
+
+def cached_revision(dataset_id: str, config: str | None = None) -> str | None:
+    """从 HF 缓存目录反解数据集 commit 哈希（`datasets/{owner}___{name}/{config}/{version}/{sha}`）。
+
+    取最近修改的那个 40 位十六进制目录名；找不到时返回 None（不联网）。
+    """
+    root = _hf_home() / "datasets" / dataset_id.replace("/", "___")
+    if not root.exists():
+        return None
+    candidates: list[tuple[float, str]] = []
+    for config_dir in root.iterdir():
+        if not config_dir.is_dir() or (config and config_dir.name != config):
+            continue
+        for version_dir in config_dir.iterdir():
+            if not version_dir.is_dir():
+                continue
+            for sha_dir in version_dir.iterdir():
+                name = sha_dir.name
+                if sha_dir.is_dir() and len(name) == 40 and all(c in "0123456789abcdef" for c in name):
+                    candidates.append((sha_dir.stat().st_mtime, name))
+    if not candidates:
+        return None
+    return max(candidates)[1]
+
+
+def _hf_revision(dataset_id: str, revision: str | None, config: str | None = None) -> tuple[str | None, str]:
+    """尽力取上游提交哈希，返回 (revision, 来源)。
+
+    来源：`hub`（联网取到）/ `cache`（从 HF 缓存目录反解）/ `config`（配置里显式给定）/ `missing`。
+    """
     try:
         from huggingface_hub import HfApi  # type: ignore
     except ImportError:
-        return revision
+        cached = cached_revision(dataset_id, config)
+        return (cached, "cache") if cached else (revision, "config" if revision else "missing")
     try:
         info = HfApi().dataset_info(dataset_id, revision=revision)
-        return getattr(info, "sha", None) or revision
+        sha = getattr(info, "sha", None)
+        if sha:
+            return str(sha), "hub"
     except Exception as exc:  # noqa: BLE001 - 网络问题不应让取数失败
-        LOG.warning("无法获取 %s 的 revision（%r），元信息中记为 %r", dataset_id, exc, revision)
-        return revision
+        LOG.warning("联网获取 %s 的 revision 失败（%r），尝试从 HF 缓存反解", dataset_id, exc)
+    cached = cached_revision(dataset_id, config)
+    if cached:
+        LOG.info("从 HF 缓存反解 %s 的 revision：%s", dataset_id, cached[:12])
+        return cached, "cache"
+    if revision:
+        return revision, "config"
+    LOG.warning("%s 的 revision 无法确定（无网络且无缓存），元信息中记为 None", dataset_id)
+    return None, "missing"
 
 
 def _iter_squad_local(path: pathlib.Path) -> list[Mapping[str, Any]]:
@@ -188,11 +267,22 @@ def _load_local(dataset_id: str, config: str | None, split: str) -> SplitView:
 
 
 def load_dataset_split(dataset_id: str, config: str | None = None, split: str = "validation",
-                       revision: str | None = None) -> SplitView:
+                       revision: str | None = None, offline: bool = False) -> SplitView:
     """加载指定数据集的某个划分；revision 固定后写入产物元信息（契约 §4）。
 
     在线优先（`datasets.load_dataset`），失败时降级到 `data/raw/` 本地副本并记录 origin。
+    `offline=True` 或环境变量 `HF_HUB_OFFLINE` / `C09_OFFLINE` 为真时，直接使用 HF 缓存、不发网络请求；
+    一旦本进程内在线加载失败，后续加载也不再重复联网（见 `reset_online_state`）。
     """
+    if offline or offline_requested():
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
+        LOG.info("离线模式：直接使用 HF 缓存，不发网络请求（%s）", dataset_id)
+    elif not online_available():
+        LOG.info("本进程内在线加载此前已失败（%s），直接使用本地副本：%s",
+                 _ONLINE_FAILURE["reason"], dataset_id)
+        return _load_local(dataset_id, config, split)
+
     try:
         from datasets import load_dataset  # type: ignore
     except ImportError:
@@ -205,12 +295,15 @@ def load_dataset_split(dataset_id: str, config: str | None = None, split: str = 
             kwargs["revision"] = revision
         ds = load_dataset(dataset_id, config, **kwargs)
         rows = [dict(row) for row in ds]
-        rev = _hf_revision(dataset_id, revision)
-        LOG.info("在线加载：%s split=%s 行数=%d revision=%s", dataset_id, split, len(rows), rev)
+        rev, rev_source = _hf_revision(dataset_id, revision, config)
+        LOG.info("在线加载：%s split=%s 行数=%d revision=%s（来源 %s）",
+                 dataset_id, split, len(rows), rev, rev_source)
         return SplitView(rows, dataset_id=dataset_id, config=config, split=split, origin="hf",
-                         revision=rev)
+                         revision=rev, revision_source=rev_source)
     except Exception as exc:  # noqa: BLE001 - 网络/上游问题一律降级，不中断实验
-        LOG.warning("在线加载 %s 失败（%r），改用本地副本 data/raw/", dataset_id, exc)
+        _ONLINE_FAILURE["reason"] = repr(exc)
+        LOG.warning("在线加载 %s 失败（%r）；本进程内后续加载不再重试联网，改用本地副本 data/raw/",
+                    dataset_id, exc)
         return _load_local(dataset_id, config, split)
 
 
