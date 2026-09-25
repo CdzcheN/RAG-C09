@@ -19,6 +19,8 @@ try:  # pyarrow 可选
 
     HAS_PARQUET = True
 except ImportError:  # pragma: no cover
+    pa = None
+    pq = None
     HAS_PARQUET = False
 
 try:
@@ -101,6 +103,7 @@ def write_table(path: str | pathlib.Path, rows: Sequence[Mapping[str, Any]],
     p = pathlib.Path(path)
     ensure_dir(p.parent)
     if HAS_PARQUET and p.suffix == ".parquet":
+        assert pa is not None and pq is not None
         table = pa.Table.from_pylist([dict(r) for r in rows])
         if columns:
             table = table.select([c for c in columns if c in table.column_names])
@@ -117,7 +120,7 @@ def write_table(path: str | pathlib.Path, rows: Sequence[Mapping[str, Any]],
 def read_table(path: str | pathlib.Path) -> list[dict[str, Any]]:
     p = pathlib.Path(path)
     if p.suffix == ".parquet":
-        if not HAS_PARQUET:
+        if pq is None:
             raise RuntimeError("读取 parquet 需要 pyarrow（见 requirements.txt）")
         return pq.read_table(p).to_pylist()
     import csv
