@@ -93,8 +93,10 @@ python scripts/prefetch_assets.py               # 预热模型与数据集（首
 python scripts/check_env.py --report results/env_report.json    # 环境自检（退出码须为 0）
 python scripts/smoke_test.py --with-tests                       # 结构/配置/契约冒烟 + 单元测试
 python scripts/final_test.py                                    # 最终验收（L0–L4，默认全跑；--fast 只跑 L0–L2）
-#    产物保留在 results/final_test/（样本/预测/特征/指标/汇总），图在 results/final_test/figures/；
-#    真实实验结果图请落 results/figures/（--figures-dir results/figures 可切过去）
+#    产物保留在 results/final_test/（样本/预测/特征/指标/汇总）：
+#      验收脚本的六张必备图   → results/final_test/figures/（每次运行前清掉自己上次的图）
+#      集成测试的四张链路图   → results/final_test/test_figures/（由 python -m unittest tests.test_end_to_end 产出）
+#    真实实验结果图请落 results/figures/（--figures-dir results/figures 可把验收图也切过去）
 
 # 1) 数据构造（A）
 python -m src.datasets.challenge_builder --config configs/challenge.yaml --seed 1000

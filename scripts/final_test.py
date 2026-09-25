@@ -20,11 +20,14 @@
   必须逐字节一致；`baseline_confidence` 允许浮点尾差（容差 1e-6，报告最大绝对差）；`latency_ms`
   是计时噪声、`_meta.timestamp` 是时间戳，均不参与比较（把计时噪声算进"逐字节"会让门禁永远无法通过）；
 - L4 在 L3 未产出真实特征表时使用**合成特征**验证 C 批链路，报告中会标注来源，避免"看起来通过"；
-- 每次运行前清理上一次遗留的中间产物（`results/final_test/l*`），避免读到 stale 结果而误报 OK；
+- 每次运行前清理上一次遗留的中间产物（`results/final_test/l*`）与本脚本上次产出的图
+  （`<figures_dir>/final-*.png`），避免读到 stale 结果而误报 OK、也避免陈旧图累积；
   产物**默认保留**且路径固定，便于人工核对：样本/预测/特征/指标/汇总在 `results/final_test/`
   （`--artifacts-dir` 可改），图表在 `results/final_test/figures/`（`--figures-dir` 可改）。
   注意 L4 在缺少真实特征表时用**合成特征**跑链路，因此这些图是链路验证图，默认不与契约约定的
   真实结果图目录 `results/figures/` 混淆；需要时可以 `--figures-dir results/figures` 覆盖。
+  集成测试（`tests/test_end_to_end.py`）的四张链路验证图单独放在
+  `results/final_test/test_figures/`，与本脚本的六张必备图分目录，避免两类图混在一起。
   脚本只清理本次新增的 `results/logs/*.log`。
 
 退出码: 0 全通过（允许 SKIP）/ 1 存在失败 / 3 产物契约校验不通过
@@ -761,13 +764,20 @@ def main(argv: list[str] | None = None) -> int:
     stale = [d for d in sorted(ctx.artifacts_dir.glob("l*")) if d.is_dir()]
     for directory in stale:
         shutil.rmtree(directory, ignore_errors=True)
+    # 只在本次会出图的层级（L4）清理旧图，避免 --fast 把上次全跑的图删掉
+    stale_figures = (sorted(ctx.figures_dir.glob("final-*.png"))
+                     if max_level >= 4 and ctx.figures_dir.exists() else [])
+    for figure in stale_figures:
+        figure.unlink()
     report = Report()
     print("== 课题 C09 最终验收测试 ==")
     print(f"仓库: {ROOT}")
     print(f"层级: L0–L{max_level}｜样本条数: {ctx.limit}")
-    print(f"产物目录: {ctx.artifacts_dir}｜图片目录: {ctx.figures_dir}")
-    if stale:
-        print(f"已清理上次的中间产物：{', '.join(d.name for d in stale)}")
+    print(f"产物目录: {ctx.artifacts_dir}")
+    print(f"验收图目录: {ctx.figures_dir}｜集成测试图目录: {ctx.artifacts_dir / 'test_figures'}")
+    if stale or stale_figures:
+        print(f"已清理上次遗留：中间产物 {', '.join(d.name for d in stale) or '无'}"
+              f"｜旧图 {len(stale_figures)} 张")
     if ctx.available and not all(ctx.available.values()):
         missing = [name for name, ok in ctx.available.items() if not ok]
         print(f"缺失依赖（相关检查将 SKIP）: {missing}")
@@ -801,8 +811,12 @@ def main(argv: list[str] | None = None) -> int:
     if ctx.figures_dir.exists():
         figures = sorted(ctx.figures_dir.glob("*.png"))
         if figures:
-            print(f"图片保留在：{ctx.figures_dir}（{len(figures)} 张，"
+            print(f"验收图保留在：{ctx.figures_dir}（{len(figures)} 张，"
                   f"{sum(f.stat().st_size for f in figures) // 1024} KB）")
+    test_figures = ctx.artifacts_dir / "test_figures"
+    if test_figures.exists():
+        count = len(sorted(test_figures.glob("*.png")))
+        print(f"集成测试图目录：{test_figures}（{count} 张，来自 python -m unittest tests.test_end_to_end）")
     return report.exit_code()
 
 

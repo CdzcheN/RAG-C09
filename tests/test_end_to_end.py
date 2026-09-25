@@ -353,9 +353,10 @@ class TestDetectionAndEvaluation(unittest.TestCase):
         scores = [0.9 if label == 1 else 0.1 for label in labels]
         baseline = [1.0 - float(r.baseline_confidence) for r in self.rows]
         summary = grouped_metrics(self.rows, scores)
-        # 图写到固定且保留的验证产物目录（results/final_test/figures/），不写临时目录——
-        # 否则测试结束即随目录删除、人找不到图；也不放 results/figures（那是真实结果图的位置）
-        figures = ROOT / "results" / "final_test" / "figures"
+        # 图写到集成测试自己的目录 results/final_test/test_figures/（与验收脚本的
+        # results/final_test/figures/ 分开，避免"测试图"与"验收图"混在一起）；
+        # 不写临时目录——否则测试结束即随目录删除、人找不到图
+        figures = ROOT / "results" / "final_test" / "test_figures"
         figures.mkdir(parents=True, exist_ok=True)
         saved = [plot_grouped_bars(summary, str(figures / "e2e-grouped.png")),
                  plot_roc_pr(labels, {"M": scores, "B1": baseline}, str(figures / "e2e-roc.png")),
