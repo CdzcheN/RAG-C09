@@ -301,7 +301,8 @@ def run_checks(records: list[dict], checks: Checks, manifest: dict[str, str], sk
                            f"期望 {expected}，实际行数 {record['n_rows_in_file']}，level 分布 "
                            f"{record['level_distribution']}")
 
-    if any(r["format"].startswith("HotpotQA") for r in records):
+    # 仅当本次确实校验了 HotpotQA **训练分片**时才核对两片合计（--only validation 等子集不适用）
+    if any(r["format"].startswith("HotpotQA") and "train-" in r["file"] for r in records):
         hotpot_train = sum(r["n_rows_in_file"] for r in records
                            if r["format"].startswith("HotpotQA") and "train-" in r["file"])
         checks.add("HotpotQA 训练分片合计行数", hotpot_train == EXPECTED_HOTPOT_TRAIN_ROWS,
