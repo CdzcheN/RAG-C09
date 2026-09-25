@@ -3,35 +3,341 @@
 
 负责人: A
 对应文档: docs/项目启动与实施指南.md §1.4、docs/数据构造规范.md §1
-状态: 骨架（待实现）：实现要点见各函数 docstring 与对应 WBS 任务
+状态: 已实现（T1.1）
+
+主路径：`datasets.load_dataset` 在线加载并固定 `revision`（契约 §4）；
+离线降级：`datasets` 未安装或联网失败时，改读工作区 `data/raw/` 下的本地副本，并在日志中
+如实记录 `origin="local"`（对应 §1.4 的约定：本地副本仅作离线备选，不是取数主路径）。
+
+规范化后的统一结构（供 challenge_builder / split / retrieval 消费）：
+
+    {
+      "id": str,                       # 原始样本 id
+      "source": "squad" | "hotpotqa",
+      "hf_split": str,                 # 上游划分名（squad: train/validation，hotpotqa: validation）
+      "split_tag": str,                # 对外命名用的划分标签，统一为 "dev"（见契约 §2.1 示例）
+      "row_index": int,                # 在所属划分中的行索引（provenance 用）
+      "question": str,
+      "answer": str,                   # gold 答案；SQuAD 不可回答题为 ""
+      "is_impossible": bool,
+      "context": [{"title": str, "sentences": [str, ...]}, ...],
+      "supporting_facts": {"title": [str, ...], "sent_id": [int, ...]},
+      "gold_context": [str, ...],      # 支撑句文本（不可回答题为空）
+    }
 """
 from __future__ import annotations
 
-from typing import Any, Iterable, Mapping, Sequence
+import hashlib
+import json
+import pathlib
+from typing import Any, Iterator, Mapping, Sequence
 
+from ..common.logging_utils import get_logger
 from ..common.schema import FeatureRow, MetricRecord, Prediction, RAGSample  # noqa: F401
+from ..common.text import split_sentences
 
-def load_dataset_split(dataset_id: str, config: str | None = None, split: str = "validation", revision: str | None = None) -> Any:
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+LOG = get_logger(__name__)
+
+#: SQuAD v2 在线标识
+SQUAD_ID = "rajpurkar/squad_v2"
+#: HotpotQA 在线标识与配置
+HOTPOTQA_ID = "hotpotqa/hotpot_qa"
+HOTPOTQA_CONFIG = "distractor"
+
+#: 本地离线副本（仅在 datasets 不可用/联网失败时使用）
+LOCAL_SQUAD_FILES = {"train": "data/raw/squad/train-v2.0.json",
+                     "validation": "data/raw/squad/dev-v2.0.json"}
+LOCAL_HOTPOTQA_FILES = {"validation": "data/raw/hotpotqa/validation-*.parquet",
+                        "train": "data/raw/hotpotqa/train-*.parquet"}
+
+#: 句切分见 `src/common/text.py::split_sentences`（近似切分，原型阶段需人工确认）
+
+
+class SplitView(Sequence[Mapping[str, Any]]):
+    """一个数据集划分的统一视图：既包住在线的 HF Dataset，也包住本地副本读出的行。
+
+    属性:
+        dataset_id / config / split / origin / revision / local_file / local_sha256
+    """
+
+    def __init__(self, rows: Sequence[Mapping[str, Any]], *, dataset_id: str, config: str | None,
+                 split: str, origin: str, revision: str | None = None,
+                 local_file: str | None = None, local_sha256: str | None = None) -> None:
+        self._rows: list[Mapping[str, Any]] = list(rows)
+        self.dataset_id = dataset_id
+        self.config = config
+        self.split = split
+        self.origin = origin
+        self.revision = revision
+        self.local_file = local_file
+        self.local_sha256 = local_sha256
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+    def __getitem__(self, index):
+        return self._rows[index]
+
+    def __iter__(self) -> Iterator[Mapping[str, Any]]:
+        return iter(self._rows)
+
+    @property
+    def rows(self) -> list[Mapping[str, Any]]:
+        return self._rows
+
+    def provenance(self) -> dict[str, Any]:
+        """写入产物 _meta / construct_log 的溯源信息（契约 §4）。"""
+        info: dict[str, Any] = {"dataset_id": self.dataset_id, "config": self.config,
+                                "split": self.split, "origin": self.origin,
+                                "n_rows": len(self._rows)}
+        if self.revision:
+            info["revision"] = self.revision
+        if self.local_file:
+            info["local_file"] = self.local_file
+            info["local_sha256"] = self.local_sha256
+        return info
+
+
+def _sha256(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _hf_revision(dataset_id: str, revision: str | None) -> str | None:
+    """尽力取上游提交哈希；无网络或未装 huggingface_hub 时返回 None（不阻断流程）。"""
+    try:
+        from huggingface_hub import HfApi  # type: ignore
+    except ImportError:
+        return revision
+    try:
+        info = HfApi().dataset_info(dataset_id, revision=revision)
+        return getattr(info, "sha", None) or revision
+    except Exception as exc:  # noqa: BLE001 - 网络问题不应让取数失败
+        LOG.warning("无法获取 %s 的 revision（%r），元信息中记为 %r", dataset_id, exc, revision)
+        return revision
+
+
+def _iter_squad_local(path: pathlib.Path) -> list[Mapping[str, Any]]:
+    """读 SQuAD v2 JSON 并摊平为与 HF 同构的行（id/title/context/question/answers）。"""
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    rows: list[Mapping[str, Any]] = []
+    for article in payload.get("data", []):
+        title = article.get("title", "")
+        for para in article.get("paragraphs", []):
+            context = para.get("context", "")
+            for qa in para.get("qas", []):
+                answers = qa.get("answers", []) or []
+                rows.append({
+                    "id": qa.get("id", ""),
+                    "title": title,
+                    "context": context,
+                    "question": qa.get("question", ""),
+                    "answers": {"text": [a.get("text", "") for a in answers],
+                                "answer_start": [int(a.get("answer_start", -1)) for a in answers]},
+                })
+    return rows
+
+
+def _iter_hotpotqa_local(path: pathlib.Path) -> list[Mapping[str, Any]]:
+    """读 HotpotQA distractor parquet（列名与 HF 一致）。"""
+    try:
+        import pyarrow.parquet as pq  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError(
+            f"读取 {path.name} 需要 pyarrow（pip install -r requirements.txt）；"
+            "或安装 datasets 并联网走在线加载"
+        ) from exc
+    return [dict(row) for row in pq.read_table(path).to_pylist()]
+
+
+def _load_local(dataset_id: str, config: str | None, split: str) -> SplitView:
+    hf_split = "validation" if split in ("dev", "validation") else split
+    if dataset_id == SQUAD_ID:
+        rel = LOCAL_SQUAD_FILES.get(hf_split)
+        if rel is None:
+            raise ValueError(f"SQuAD 本地副本不支持划分 {split!r}（见 data/raw/）")
+        path = ROOT / rel
+        rows = _iter_squad_local(path)
+    elif dataset_id == HOTPOTQA_ID:
+        pattern = LOCAL_HOTPOTQA_FILES.get(hf_split)
+        if pattern is None:
+            raise ValueError(f"HotpotQA 本地副本不支持划分 {split!r}（见 data/raw/）")
+        matches = sorted((ROOT / pattern).parent.glob(pathlib.Path(pattern).name))
+        if not matches:
+            raise FileNotFoundError(
+                f"未找到本地副本 {pattern}；请安装 datasets 联网加载，或先执行 scripts/download_data.sh"
+            )
+        rows = []
+        for p in matches:
+            rows.extend(_iter_hotpotqa_local(p))
+        path = matches[0] if len(matches) == 1 else None
+    else:
+        raise FileNotFoundError(
+            f"未安装 datasets 且无 {dataset_id!r} 的本地副本；请先 pip install datasets 联网加载"
+        )
+
+    sha = _sha256(path) if path is not None else None
+    LOG.info("本地副本加载：%s split=%s 行数=%d", dataset_id, hf_split, len(rows))
+    return SplitView(rows, dataset_id=dataset_id, config=config, split=hf_split, origin="local",
+                     local_file=str(path.relative_to(ROOT)) if path is not None else str(pattern),
+                     local_sha256=sha)
+
+
+def load_dataset_split(dataset_id: str, config: str | None = None, split: str = "validation",
+                       revision: str | None = None) -> SplitView:
     """加载指定数据集的某个划分；revision 固定后写入产物元信息（契约 §4）。
 
-    状态: 待实现 —— T1.1：用 datasets.load_dataset 实现，禁止手动下载
+    在线优先（`datasets.load_dataset`），失败时降级到 `data/raw/` 本地副本并记录 origin。
     """
-    raise NotImplementedError("T1.1：用 datasets.load_dataset 实现，禁止手动下载")
+    try:
+        from datasets import load_dataset  # type: ignore
+    except ImportError:
+        LOG.warning("未安装 datasets，改用本地副本（data/raw/）：%s", dataset_id)
+        return _load_local(dataset_id, config, split)
+
+    try:
+        kwargs: dict[str, Any] = {"split": split}
+        if revision:
+            kwargs["revision"] = revision
+        ds = load_dataset(dataset_id, config, **kwargs)
+        rows = [dict(row) for row in ds]
+        rev = _hf_revision(dataset_id, revision)
+        LOG.info("在线加载：%s split=%s 行数=%d revision=%s", dataset_id, split, len(rows), rev)
+        return SplitView(rows, dataset_id=dataset_id, config=config, split=split, origin="hf",
+                         revision=rev)
+    except Exception as exc:  # noqa: BLE001 - 网络/上游问题一律降级，不中断实验
+        LOG.warning("在线加载 %s 失败（%r），改用本地副本 data/raw/", dataset_id, exc)
+        return _load_local(dataset_id, config, split)
 
 
-def normalize_hotpotqa(example: Mapping[str, Any]) -> dict[str, Any]:
-    """把 HotpotQA 样本规范化为 question / answer / context / supporting_facts 结构。
-
-    状态: 待实现 —— T1.1：统一字段名，供 challenge_builder 消费
-    """
-    raise NotImplementedError("T1.1：统一字段名，供 challenge_builder 消费")
+def _answerable_support_sentence(context: str, answer_start: int) -> tuple[int, str]:
+    """由答案起始偏移定位所在句，返回 (句号, 句文本)。"""
+    sentences = split_sentences(context)
+    offset = 0
+    for idx, sentence in enumerate(sentences):
+        start = context.find(sentence, offset)
+        if start < 0:
+            start = offset
+        end = start + len(sentence)
+        if answer_start < 0 or start <= answer_start < end:
+            return idx, sentence
+        offset = end
+    if sentences:
+        return len(sentences) - 1, sentences[-1]
+    return -1, ""
 
 
 def normalize_squad(example: Mapping[str, Any]) -> dict[str, Any]:
-    """把 SQuAD v2 样本规范化为同一结构（保留不可回答标记）。
+    """把 SQuAD v2 样本规范化为统一结构（保留不可回答标记）。
 
-    状态: 待实现 —— T1.1：不可回答问题用于“证据缺失”类对照
+    备注: SQuAD 无句级标注，`supporting_facts` 由答案起始偏移推导（见 `split_sentences` 的
+    近似说明）；不可回答样本的 `gold_context` 为空列表，`is_impossible=True`。
     """
-    raise NotImplementedError("T1.1：不可回答问题用于“证据缺失”类对照")
+    answers = example.get("answers") or {}
+    texts = [t for t in (answers.get("text") or []) if t]
+    starts = [int(s) for s in (answers.get("answer_start") or [])]
+    context = example.get("context", "") or ""
+    title = example.get("title", "") or ""
+    impossible = not texts
+
+    if impossible:
+        gold_context: list[str] = []
+        support = {"title": [], "sent_id": []}
+    else:
+        sent_idx, sentence = _answerable_support_sentence(context, starts[0] if starts else -1)
+        gold_context = [sentence] if sentence else []
+        support = {"title": [title] if sentence else [], "sent_id": [sent_idx] if sentence else []}
+
+    return {
+        "id": example.get("id", ""),
+        "source": "squad",
+        "hf_split": example.get("hf_split", "dev"),
+        "split_tag": "dev",
+        "row_index": int(example.get("row_index", -1)),
+        "question": example.get("question", ""),
+        "answer": texts[0] if texts else "",
+        "is_impossible": impossible,
+        "context": [{"title": title, "sentences": split_sentences(context)}],
+        "supporting_facts": support,
+        "gold_context": gold_context,
+    }
 
 
+def normalize_hotpotqa(example: Mapping[str, Any]) -> dict[str, Any]:
+    """把 HotpotQA distractor 样本规范化为统一结构。
+
+    `context` 由 `{"title": [...], "sentences": [[句...], ...]}` 转为
+    `[{"title": str, "sentences": [str, ...]}, ...]`；`gold_context` 取 `supporting_facts`
+    指向的句子文本。
+    """
+    raw_context = example.get("context") or {}
+    titles = list(raw_context.get("title") or [])
+    sentences = list(raw_context.get("sentences") or [])
+    context = [{"title": str(t), "sentences": [str(s) for s in (sentences[i] if i < len(sentences) else [])]}
+               for i, t in enumerate(titles)]
+
+    facts = example.get("supporting_facts") or {}
+    fact_titles = [str(t) for t in (facts.get("title") or [])]
+    fact_sents = [int(s) for s in (facts.get("sent_id") or [])]
+    by_title = {p["title"]: p["sentences"] for p in context}
+    gold_context: list[str] = []
+    for title, sent_id in zip(fact_titles, fact_sents):
+        sents = by_title.get(title, [])
+        if 0 <= sent_id < len(sents):
+            gold_context.append(sents[sent_id])
+
+    return {
+        "id": example.get("id", ""),
+        "source": "hotpotqa",
+        "hf_split": example.get("hf_split", "validation"),
+        "split_tag": "dev",
+        "row_index": int(example.get("row_index", -1)),
+        "question": example.get("question", ""),
+        "answer": example.get("answer", "") or "",
+        "is_impossible": False,
+        "context": context,
+        "supporting_facts": {"title": fact_titles, "sent_id": fact_sents},
+        "gold_context": gold_context,
+    }
+
+
+def normalize(example: Mapping[str, Any], source: str, row_index: int = -1,
+              hf_split: str = "dev") -> dict[str, Any]:
+    """按 source 分派到对应规范化函数，并补上溯源字段。"""
+    enriched = dict(example)
+    enriched.setdefault("row_index", row_index)
+    enriched.setdefault("hf_split", hf_split)
+    if source == "squad":
+        return normalize_squad(enriched)
+    if source == "hotpotqa":
+        return normalize_hotpotqa(enriched)
+    raise ValueError(f"未知数据来源：{source!r}（应为 'squad' 或 'hotpotqa'）")
+
+
+def source_of(dataset_id: str) -> str:
+    """数据集标识 → 契约中的 `source` 取值。"""
+    if dataset_id == SQUAD_ID:
+        return "squad"
+    if dataset_id == HOTPOTQA_ID:
+        return "hotpotqa"
+    raise ValueError(f"未知数据集标识：{dataset_id!r}")
+
+
+def load_normalized(dataset_id: str, config: str | None = None, split: str = "validation",
+                    revision: str | None = None, limit: int | None = None) -> tuple[SplitView, list[dict[str, Any]]]:
+    """加载并规范化一个划分，返回 (视图, 规范化样本列表)。
+
+    `limit` 只影响返回的规范化列表（便于冒烟），不改变视图本身。
+    """
+    view = load_dataset_split(dataset_id, config, split=split, revision=revision)
+    source = source_of(dataset_id)
+    rows: list[dict[str, Any]] = []
+    for i, example in enumerate(view):
+        if limit is not None and len(rows) >= limit:
+            break
+        rows.append(normalize(example, source, row_index=i, hf_split=view.split))
+    return view, rows
