@@ -16,10 +16,12 @@
 约定:
 - 重依赖（torch/transformers/rank_bm25/pyarrow/sklearn…）缺失时对应检查记 SKIP 并说明安装方式，
   不计为失败（交付到没有 GPU 的机器上也能给出结构 + 数据链路的结论）；
-- L3 的 G1 检查比较同种子两次运行**数据行**的逐字节一致性（`_meta` 行含 timestamp 故排除，
-  报告中已说明该口径）；
+- L3 的 G1 检查口径（见 `g1_compare`）：`sample_id` / `answer` / `prompt` / `passages` / `decode`
+  必须逐字节一致；`baseline_confidence` 允许浮点尾差（容差 1e-6，报告最大绝对差）；`latency_ms`
+  是计时噪声、`_meta.timestamp` 是时间戳，均不参与比较（把计时噪声算进"逐字节"会让门禁永远无法通过）；
 - L4 在 L3 未产出真实特征表时使用**合成特征**验证 C 批链路，报告中会标注来源，避免"看起来通过"；
-- 产物**默认保留**且路径固定，便于人工核对：样本/预测/特征/指标/汇总在 `results/final_test/`
+- 每次运行前清理上一次遗留的中间产物（`results/final_test/l*`），避免读到 stale 结果而误报 OK；
+  产物**默认保留**且路径固定，便于人工核对：样本/预测/特征/指标/汇总在 `results/final_test/`
   （`--artifacts-dir` 可改），图表在 `results/final_test/figures/`（`--figures-dir` 可改）。
   注意 L4 在缺少真实特征表时用**合成特征**跑链路，因此这些图是链路验证图，默认不与契约约定的
   真实结果图目录 `results/figures/` 混淆；需要时可以 `--figures-dir results/figures` 覆盖。
@@ -39,6 +41,7 @@ import json
 import os
 import pathlib
 import random
+import shutil
 import subprocess
 import sys
 import unittest
@@ -479,10 +482,54 @@ def check_pipeline_cli(ctx: Ctx) -> tuple[str, str]:
     return "OK", f"{len(data_lines(path))} 条预测通过 validate（含 _meta、latency、自评置信度）"
 
 
+#: G1 比较口径：这些字段必须逐字节一致（答案与证据是"可复现"的实质内容）
+G1_STRICT_FIELDS = ("sample_id", "answer", "prompt", "passages", "decode")
+#: 允许浮点尾差的字段（CUDA fp16 归约顺序差异会带来极小偏差）→ 容差
+G1_TOLERANT_FIELDS = {"baseline_confidence": 1e-6}
+#: 计时/时间戳类字段，不参与一致性比较
+G1_IGNORED_FIELDS = ("latency_ms",)
+
+
+def read_rows(path: pathlib.Path) -> list[dict]:
+    """读 JSONL 的数据行（排除 `_meta`）。"""
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and '"_meta"' not in line]
+
+
+def g1_compare(rows_a: list[dict], rows_b: list[dict]) -> tuple[bool, str]:
+    """按门禁 G1 的口径比较两次运行的数据行，返回 (是否一致, 差异说明)。
+
+    语义字段（`G1_STRICT_FIELDS`）逐字节比较；`G1_TOLERANT_FIELDS` 允许给定容差内的浮点尾差；
+    `G1_IGNORED_FIELDS`（计时等）与 `_meta.timestamp` 不参与比较。
+    """
+    if len(rows_a) != len(rows_b):
+        return False, f"数据行数不同：{len(rows_a)} vs {len(rows_b)}"
+    max_delta = 0.0
+    for index, (left, right) in enumerate(zip(rows_a, rows_b), start=1):
+        if left.get("sample_id") != right.get("sample_id"):
+            return False, (f"第 {index} 条 sample_id 不同："
+                           f"{left.get('sample_id')!r} vs {right.get('sample_id')!r}")
+        for field in G1_STRICT_FIELDS:
+            if left.get(field) != right.get(field):
+                return False, (f"第 {index} 条字段 {field!r} 不同："
+                               f"{str(left.get(field))[:120]!r} vs {str(right.get(field))[:120]!r}")
+        for field, tolerance in G1_TOLERANT_FIELDS.items():
+            try:
+                delta = abs(float(left.get(field)) - float(right.get(field)))
+            except (TypeError, ValueError):
+                return False, f"第 {index} 条字段 {field!r} 不可比较：{left.get(field)!r}"
+            if delta != delta:  # NaN：两侧都缺失，视为一致
+                continue
+            max_delta = max(max_delta, delta)
+            if delta > tolerance:
+                return False, f"第 {index} 条字段 {field!r} 超出容差 {tolerance:g}：|Δ|={delta:.3g}"
+    return True, f"语义字段逐字节一致；baseline_confidence 最大浮点差 {max_delta:.3g}"
+
+
 def check_g1_determinism(ctx: Ctx) -> tuple[str, str]:
     if ctx.samples_path is None or not ctx.has("torch", "transformers", "rank_bm25"):
         return "SKIP", "需要生成管道可用（torch/transformers/rank_bm25）"
-    hashes, tails = [], []
+    paths: list[pathlib.Path] = []
     for tag in ("a", "b"):
         out = ctx.subdir(f"l3-g1-{tag}")
         code, tail = run_cli("src.generation.cli", ["--config", "configs/default.yaml", "--seed", "13",
@@ -492,11 +539,12 @@ def check_g1_determinism(ctx: Ctx) -> tuple[str, str]:
         path = out / "final-g1-13.jsonl"
         if code != 0 or not path.exists():
             return "FAIL", f"第 {tag} 次运行失败（退出码 {code}）：{tail}"
-        hashes.append(sha256_text(path))
-        tails.append(data_lines(path))
-    if tails[0] != tails[1]:
-        return "FAIL", "同种子两次运行的数据行不一致（门禁 G1 未通过）"
-    return "OK", f"两次运行数据行逐字节一致（sha256={hashes[0][:12]}…，已排除 _meta 的 timestamp）"
+        paths.append(path)
+    ok, detail = g1_compare(read_rows(paths[0]), read_rows(paths[1]))
+    for field in G1_IGNORED_FIELDS:
+        detail += f"；{field} 不参与比较"
+    detail += f"（对比文件：{paths[0].relative_to(ROOT)} / {paths[1].relative_to(ROOT)}）"
+    return ("OK" if ok else "FAIL"), detail
 
 
 def check_features_cli(ctx: Ctx) -> tuple[str, str]:
@@ -557,19 +605,49 @@ def _synthetic_features(ctx: Ctx) -> tuple[pathlib.Path, pathlib.Path]:
     return written, fit_split
 
 
+def _true_features_usable(ctx: Ctx) -> tuple[bool, str]:
+    """判断 L3 的真实特征表能否支撑 5 折分层分组 CV（行数与两类标签都要够）。"""
+    if ctx.features_path is None:
+        return False, "L3 未产出真实特征表"
+    from src.common import io
+
+    try:
+        rows = io.read_table(ctx.features_path)
+    except Exception as exc:  # noqa: BLE001
+        return False, f"读取失败（{exc!r}）"
+    labels = {int(row.get("is_hallucination", -1)) for row in rows}
+    if len(rows) < 20 or labels != {0, 1}:
+        return False, (f"真实特征表仅 {len(rows)} 行、标签 {sorted(labels)}，不足以做 5 折分层分组 CV"
+                       f"（要覆盖真实特征链路请把 --limit 提到 ≥ 30）")
+    return True, f"真实管道产物 {len(rows)} 行"
+
+
+def _fit_split_of(ctx: Ctx, features: pathlib.Path) -> pathlib.Path:
+    """按基样本 7:3 生成 dev-fit 划分（键取 sample_id 去掉末段），保证报告侧非空。"""
+    from src.common import io
+    from src.detection.train import base_key as sample_base_key  # 按 sample_id 派生基样本键
+
+    groups: dict[str, list[str]] = {}
+    for row in io.read_table(features):
+        sample_id = str(row["sample_id"])
+        groups.setdefault(sample_base_key(sample_id), []).append(sample_id)
+    keys = sorted(groups)
+    n_fit = max(1, min(len(keys) - 1, int(round(len(keys) * 0.7))))
+    fit_ids = {sample_id for key in keys[:n_fit] for sample_id in groups[key]}
+    path = ctx.subdir("l4-real") / "split_dev_fit.jsonl"
+    io.write_jsonl(path, [{"sample_id": sample_id} for sample_id in sorted(fit_ids)])
+    return path
+
+
 def check_detection_cli(ctx: Ctx) -> tuple[str, str]:
     if not ctx.has("sklearn", "numpy"):
         return "SKIP", ctx.skip_reason("sklearn", "numpy")
-    if ctx.features_path is not None and ctx.features_source.startswith("真实"):
-        features, fit_split = ctx.features_path, ctx.samples_path
-        fit_split = ctx.subdir("l4-real") / "split_dev_fit.jsonl"
-        from src.common import io
-        io.write_jsonl(fit_split, [{"sample_id": row["sample_id"]}
-                                   for index, row in enumerate(io.read_table(features)) if index % 10 < 7])
-        source = "真实管道产物"
+    usable, why = _true_features_usable(ctx)
+    if usable:
+        features, fit_split, source = ctx.features_path, _fit_split_of(ctx, ctx.features_path), why
     else:
         features, fit_split = _synthetic_features(ctx)
-        source = "合成特征（L3 未产出真实特征）"
+        source = f"合成特征（{why}）"
 
     out = ctx.subdir("l4-metrics")
     common = ["--config", "configs/detect.yaml", "--seed", "13", "--features", str(features),
@@ -679,11 +757,17 @@ def main(argv: list[str] | None = None) -> int:
     ctx = Ctx(artifacts_dir=pathlib.Path(args.artifacts_dir),
               figures_dir=pathlib.Path(args.figures_dir), limit=max(1, args.limit))
     ctx.artifacts_dir.mkdir(parents=True, exist_ok=True)
+    # 清理上一次运行留下的中间产物：否则 L3/L4 会读到 stale 结果而"误报 OK"（图片目录不动，按名覆盖）
+    stale = [d for d in sorted(ctx.artifacts_dir.glob("l*")) if d.is_dir()]
+    for directory in stale:
+        shutil.rmtree(directory, ignore_errors=True)
     report = Report()
     print("== 课题 C09 最终验收测试 ==")
     print(f"仓库: {ROOT}")
     print(f"层级: L0–L{max_level}｜样本条数: {ctx.limit}")
     print(f"产物目录: {ctx.artifacts_dir}｜图片目录: {ctx.figures_dir}")
+    if stale:
+        print(f"已清理上次的中间产物：{', '.join(d.name for d in stale)}")
     if ctx.available and not all(ctx.available.values()):
         missing = [name for name, ok in ctx.available.items() if not ok]
         print(f"缺失依赖（相关检查将 SKIP）: {missing}")

@@ -47,6 +47,7 @@ def generation_settings(cfg: Mapping[str, Any]) -> dict[str, Any]:
         "temperature": float(generation.get("temperature", 1.0)),
         "template": str(generation.get("prompt_template") or DEFAULT_PROMPT_TEMPLATE),
         "with_baseline_confidence": bool(generation.get("with_baseline_confidence", True)),
+        "deterministic": bool(generation.get("deterministic", False)),
     }
 
 
@@ -63,7 +64,8 @@ def run_pipeline(samples: Sequence[RAGSample], cfg: Mapping[str, Any], seed: int
     granularity = str(retrieval_cfg.get("granularity", "sentence"))
     exp_id = make_exp_id(str(cfg.get("exp_prefix", "exp")), COMPONENT, seed)
 
-    set_seed(seed)
+    # 门禁 G1：贪心解码 + 固定种子；需要严格确定性算子时由 generation.deterministic 打开
+    set_seed(seed, deterministic=settings["deterministic"])
     if generator is None:
         generator = load_generator(settings["model_id"], settings["dtype"], settings["device"])
     LOG.info("管道启动 exp_id=%s seed=%s top_k=%s granularity=%s vram=%s",

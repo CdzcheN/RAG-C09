@@ -398,5 +398,57 @@ class TestCliDryRun(unittest.TestCase):
         self.assertEqual(proc.returncode, 1, "缺少 --exp-ids 时应返回输入错误码 1")
 
 
+class TestG1DeterminismContract(unittest.TestCase):
+    """门禁 G1 的比较口径：语义字段严格一致，计时噪声不参与比较。
+
+    口径实现于 scripts/final_test.py::g1_compare（脚本同时被 CI/人工验收使用，故在这里锁住行为）。
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import final_test  # noqa: PLC0415 - 只在需要时导入脚本模块
+
+        cls.g1 = staticmethod(final_test.g1_compare)
+
+    @staticmethod
+    def _row(**overrides) -> dict:
+        row = {"sample_id": "s-1", "answer": "Paris", "prompt": "p",
+               "passages": [{"rank": 1, "title": "t", "text": "x", "score": 1.5}],
+               "decode": {"do_sample": False, "max_new_tokens": 128},
+               "baseline_confidence": 0.7, "latency_ms": 10.0}
+        row.update(overrides)
+        return row
+
+    def test_latency_difference_is_accepted(self) -> None:
+        ok, detail = self.g1([self._row(latency_ms=10.0)], [self._row(latency_ms=999.0)])
+        self.assertTrue(ok, detail)
+
+    def test_answer_difference_fails_and_names_field(self) -> None:
+        ok, detail = self.g1([self._row()], [self._row(answer="Lyon")])
+        self.assertFalse(ok)
+        self.assertIn("answer", detail)
+
+    def test_passages_difference_fails(self) -> None:
+        ok, detail = self.g1([self._row()],
+                             [self._row(passages=[{"rank": 1, "title": "t", "text": "y", "score": 1.5}])])
+        self.assertFalse(ok)
+        self.assertIn("passages", detail)
+
+    def test_baseline_confidence_tolerance(self) -> None:
+        ok, _ = self.g1([self._row(baseline_confidence=0.7)],
+                        [self._row(baseline_confidence=0.7 + 1e-12)])
+        self.assertTrue(ok)
+        ok2, detail = self.g1([self._row(baseline_confidence=0.7)],
+                              [self._row(baseline_confidence=0.8)])
+        self.assertFalse(ok2)
+        self.assertIn("baseline_confidence", detail)
+
+    def test_row_count_difference_fails(self) -> None:
+        ok, detail = self.g1([self._row()], [self._row(), self._row(sample_id="s-2")])
+        self.assertFalse(ok)
+        self.assertIn("数据行数", detail)
+
+
 if __name__ == "__main__":
     unittest.main()

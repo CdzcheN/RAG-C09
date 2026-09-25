@@ -36,6 +36,10 @@ generation:
   do_sample: false          # 贪心解码：省显存 + 多种子可复现
   temperature: 1.0
   batch_size: 1
+  # 严格确定性：开启后 set_seed 会调用 torch.use_deterministic_algorithms(True)。
+  # 门禁 G1 的实质要求是「答案与证据逐字节一致」，贪心解码已能保证；个别算子在确定性模式下会直接报错，
+  # 因此默认关闭，遇到 argmax 并列导致的不稳定时再打开并记录到实验记录（见 docs/编码与协作规范.md §5）。
+  deterministic: false
   prompt_template: |
     Evidence:
     {evidence}
