@@ -13,3 +13,6 @@ data/raw/
 # —— 下载残片（网络中断时的临时文件）——
 *.part
 *.incomplete
+
+# —— 验收测试产物（results/final_test/ 由 scripts/final_test.py 生成，可随时重跑）——
+results/final_test/

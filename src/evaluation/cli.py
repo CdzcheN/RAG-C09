@@ -43,6 +43,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--exp-ids", nargs="*", default=None, help="要评估的运行 ID（可多个）")
     ap.add_argument("--baseline-exp-id", default=None, help="配对检验的对照运行（缺省自动找 B1 自评置信度）")
     ap.add_argument("--no-figures", action="store_true", help="只出表与检验，不绘图")
+    ap.add_argument("--figures-dir", default=None,
+                    help="图片输出目录（默认 results/figures；给了 --out 时为 <out>/figures）")
     ap.add_argument("--scores-dir", default=None,
                     help="逐样本分数目录（默认 results/scores；detection 用了 --out 时指向同一根）")
     return ap
@@ -178,7 +180,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        figures_dir = (pathlib.Path(args.out) / "figures") if args.out else (ROOT / "results" / "figures")
+        figures_dir = (pathlib.Path(args.figures_dir) if args.figures_dir else
+                       (pathlib.Path(args.out) / "figures") if args.out
+                       else (ROOT / "results" / "figures"))
         figures_dir.mkdir(parents=True, exist_ok=True)
         primary = metrics[primary_id]
         saved: list[str] = []

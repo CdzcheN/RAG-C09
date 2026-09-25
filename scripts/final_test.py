@@ -9,8 +9,9 @@
   python scripts/final_test.py                       # 默认全跑 L0–L4（L3/L4 需模型与依赖，首次会下载权重）
   python scripts/final_test.py --fast                # 只跑 L0–L2（秒级，无需模型）
   python scripts/final_test.py --level 3             # 跑到指定层级
-  python scripts/final_test.py --keep-artifacts      # 保留临时产物目录（默认结束即清理）
   python scripts/final_test.py --limit 2             # 覆盖 L3/L4 的样本条数（默认 2）
+  python scripts/final_test.py --artifacts-dir /tmp/c09-final   # 改产物目录（默认保留在仓库内）
+  python scripts/final_test.py --figures-dir results/figures    # 把验证图也放到真实结果图目录
 
 约定:
 - 重依赖（torch/transformers/rank_bm25/pyarrow/sklearn…）缺失时对应检查记 SKIP 并说明安装方式，
@@ -18,7 +19,11 @@
 - L3 的 G1 检查比较同种子两次运行**数据行**的逐字节一致性（`_meta` 行含 timestamp 故排除，
   报告中已说明该口径）；
 - L4 在 L3 未产出真实特征表时使用**合成特征**验证 C 批链路，报告中会标注来源，避免"看起来通过"；
-- 所有产物写到临时目录，脚本结束清理本次新增的 `results/logs/*.log`。
+- 产物**默认保留**且路径固定，便于人工核对：样本/预测/特征/指标/汇总在 `results/final_test/`
+  （`--artifacts-dir` 可改），图表在 `results/final_test/figures/`（`--figures-dir` 可改）。
+  注意 L4 在缺少真实特征表时用**合成特征**跑链路，因此这些图是链路验证图，默认不与契约约定的
+  真实结果图目录 `results/figures/` 混淆；需要时可以 `--figures-dir results/figures` 覆盖。
+  脚本只清理本次新增的 `results/logs/*.log`。
 
 退出码: 0 全通过（允许 SKIP）/ 1 存在失败 / 3 产物契约校验不通过
 """
@@ -34,10 +39,8 @@ import json
 import os
 import pathlib
 import random
-import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -117,12 +120,12 @@ class Report:
 
 
 class Ctx:
-    """运行上下文：临时目录、产物路径、依赖可用性、需清理的日志文件。"""
+    """运行上下文：产物目录、依赖可用性、需清理的日志文件。"""
 
-    def __init__(self, keep: bool, limit: int) -> None:
-        self.keep = keep
+    def __init__(self, artifacts_dir: pathlib.Path, figures_dir: pathlib.Path, limit: int) -> None:
         self.limit = limit
-        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="c09-final-"))
+        self.artifacts_dir = artifacts_dir
+        self.figures_dir = figures_dir
         self.available = {name: importlib.util.find_spec(name) is not None for name in HEAVY_DEPS}
         self.log_dir = ROOT / "results" / "logs"
         self.logs_before = set(self.log_dir.glob("*.log")) if self.log_dir.exists() else set()
@@ -141,13 +144,12 @@ class Ctx:
         return f"缺少 {missing}；安装：{'；'.join(sorted(hints)) if hints else 'python -m pip install -r requirements.txt'}"
 
     def subdir(self, name: str) -> pathlib.Path:
-        path = self.tmp / name
+        path = self.artifacts_dir / name
         path.mkdir(parents=True, exist_ok=True)
         return path
 
     def cleanup(self) -> None:
-        if not self.keep:
-            shutil.rmtree(self.tmp, ignore_errors=True)
+        """只清理本次运行新增的日志；产物目录默认保留，便于人工核对。"""
         for path in sorted(set(self.log_dir.glob("*.log")) - self.logs_before):
             try:
                 path.unlink()
@@ -611,7 +613,7 @@ def check_evaluation_cli(ctx: Ctx) -> tuple[str, str]:
     code, tail = run_cli("src.evaluation.cli", [
         "--config", "configs/detect.yaml", "--seed", "13", "--exp-ids", str(metrics),
         "--baseline-exp-id", "final-selfconf-13", "--out", str(out),
-        "--scores-dir", str(root / "scores"),
+        "--scores-dir", str(root / "scores"), "--figures-dir", str(ctx.figures_dir),
         *(["--no-figures"] if not ctx.has("matplotlib") else [])])
     if code != 0:
         return "FAIL", f"退出码 {code}：{tail}"
@@ -619,17 +621,19 @@ def check_evaluation_cli(ctx: Ctx) -> tuple[str, str]:
         if not (out / name).exists():
             return "FAIL", f"缺少 {name}"
     payload = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+    primary_exp_id = next(iter(payload.get("runs") or ["final-logreg-13"]))
     sig = payload.get("significance") or {}
     if sig.get("n_pairs", 0) <= 0:
         return "FAIL", "配对检验未在共同 sample_id 上完成"
     delta = sig.get("delta_auc")
     detail = (f"配对 n={sig['n_pairs']}，ΔAUC={delta if delta is None else f'{delta:.4f}'}，"
               f"p_t={sig['ttest']['p_value']:.3g}，p_wilcoxon={sig['wilcoxon']['p_value']:.3g}")
-    figures = sorted((out / "figures").glob("*.png")) if (out / "figures").exists() else []
+    figures = sorted(ctx.figures_dir.glob(f"{primary_exp_id}-*.png"))
     if ctx.has("matplotlib"):
         if len(figures) < 6:
-            return "FAIL", f"必备图不足（{len(figures)}/6）"
-        detail += f"；六张图齐备（{sum(f.stat().st_size for f in figures) // 1024} KB）"
+            return "FAIL", f"必备图不足（{len(figures)}/6，目录 {ctx.figures_dir}）"
+        detail += (f"；六张图齐备（{sum(f.stat().st_size for f in figures) // 1024} KB，"
+                   f"目录 {ctx.figures_dir}）")
     else:
         detail += "；matplotlib 缺失，跳过出图"
     return "OK", detail
@@ -665,44 +669,56 @@ def main(argv: list[str] | None = None) -> int:
                         help="跑到第几层（默认 4 = 全跑）")
     parser.add_argument("--fast", action="store_true", help="等价于 --level 2（只跑静态/单元/数据链路）")
     parser.add_argument("--limit", type=int, default=2, help="L3/L4 的样本条数（冒烟尺度）")
-    parser.add_argument("--keep-artifacts", action="store_true", help="保留临时产物目录")
+    parser.add_argument("--artifacts-dir", default=str(ROOT / "results" / "final_test"),
+                        help="验收中间产物目录（默认 results/final_test，默认保留）")
+    parser.add_argument("--figures-dir", default=str(ROOT / "results" / "final_test" / "figures"),
+                        help="图表输出目录（默认 results/final_test/figures；真实结果图请用 results/figures）")
     args = parser.parse_args(argv)
 
     max_level = 2 if args.fast else args.level
-    ctx = Ctx(keep=args.keep_artifacts, limit=max(1, args.limit))
+    ctx = Ctx(artifacts_dir=pathlib.Path(args.artifacts_dir),
+              figures_dir=pathlib.Path(args.figures_dir), limit=max(1, args.limit))
+    ctx.artifacts_dir.mkdir(parents=True, exist_ok=True)
     report = Report()
     print("== 课题 C09 最终验收测试 ==")
     print(f"仓库: {ROOT}")
-    print(f"层级: L0–L{max_level}｜样本条数: {ctx.limit}｜临时目录: {ctx.tmp}")
+    print(f"层级: L0–L{max_level}｜样本条数: {ctx.limit}")
+    print(f"产物目录: {ctx.artifacts_dir}｜图片目录: {ctx.figures_dir}")
     if ctx.available and not all(ctx.available.values()):
         missing = [name for name, ok in ctx.available.items() if not ok]
         print(f"缺失依赖（相关检查将 SKIP）: {missing}")
 
-    for level, name, func in CHECKS:
-        if LEVELS.index(level) > max_level:
-            continue
-        if not report.rows or report.rows[-1][1] != level:
-            report.section(level)
-        try:
-            status, detail = func(ctx)  # type: ignore[operator]
-        except Exception as exc:  # noqa: BLE001 - 单项异常不应中断整轮验收
-            status, detail = "FAIL", repr(exc)
-        report.add(status, level, name, detail)
+    # 用 try/finally 保证即使输出被管道截断（BrokenPipeError）也能清理本次新增的日志
+    try:
+        for level, name, func in CHECKS:
+            if LEVELS.index(level) > max_level:
+                continue
+            if not report.rows or report.rows[-1][1] != level:
+                report.section(level)
+            try:
+                status, detail = func(ctx)  # type: ignore[operator]
+            except Exception as exc:  # noqa: BLE001 - 单项异常不应中断整轮验收
+                status, detail = "FAIL", repr(exc)
+            report.add(status, level, name, detail)
 
-    for name, ok in ctx.extra_checks:
-        report.add("OK" if ok else "FAIL", "L4", f"派生结论：{name}", "")
+        for name, ok in ctx.extra_checks:
+            report.add("OK" if ok else "FAIL", "L4", f"派生结论：{name}", "")
 
-    counts = report.totals()
-    print(f"\n结果：OK {counts['OK']}，SKIP {counts['SKIP']}，FAIL {counts['FAIL']}")
-    if counts["FAIL"]:
-        print("失败项：")
-        for status, level, name, detail in report.rows:
-            if status == "FAIL":
-                print(f"  - [{level}] {name}：{detail}")
-    if not ctx.keep:
+        counts = report.totals()
+        print(f"\n结果：OK {counts['OK']}，SKIP {counts['SKIP']}，FAIL {counts['FAIL']}")
+        if counts["FAIL"]:
+            print("失败项：")
+            for status, level, name, detail in report.rows:
+                if status == "FAIL":
+                    print(f"  - [{level}] {name}：{detail}")
+    finally:
         ctx.cleanup()
-    else:
-        print(f"产物保留在：{ctx.tmp}")
+    print(f"产物保留在：{ctx.artifacts_dir}")
+    if ctx.figures_dir.exists():
+        figures = sorted(ctx.figures_dir.glob("*.png"))
+        if figures:
+            print(f"图片保留在：{ctx.figures_dir}（{len(figures)} 张，"
+                  f"{sum(f.stat().st_size for f in figures) // 1024} KB）")
     return report.exit_code()
 
 
