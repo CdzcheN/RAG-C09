@@ -43,20 +43,21 @@ RAG-C09/
 │   ├── challenge.yaml       三类退化算子参数与输出路径
 │   └── detect.yaml          特征分组、对照、判别器、检验与目标增益
 ├── src/                     源码（分层见 docs/项目启动与实施指南.md §2.1）
-│   ├── common/              schema · seeding · io · logging_utils · cli_utils · validate ← 已实现
+│   ├── common/              schema · seeding · io · logging_utils · cli_utils · validate · text
 │   ├── datasets/            在线加载 reader · 三类算子 challenge_builder · 抽样划分 split
 │   ├── retrieval/           passage store · BM25（主管线）· dense（可选）· Recall@k
 │   ├── generation/          模型装载 · 解码 · 端到端管道 · 自评置信度基线
-│   ├── features/            entailment · overlap ← 已实现 · consistency · build_features
+│   ├── features/            entailment · overlap · consistency · build_features
 │   ├── detection/           判别器 · 训练 · 概率校准 · 预测
-│   ├── evaluation/          metrics ← 已实现 · grouped · significance · tables · plots
+│   ├── evaluation/          metrics · grouped · significance · tables · plots
 │   └── demo/                演示入口（复用管道实现）
-├── tests/                   unittest 单元测试（overlap / seeding / metrics / contract，共 39 用例）
+├── tests/                   unittest 单元测试（overlap / seeding / metrics / contract / end_to_end，共 56 用例）
 ├── results/                 实验产物（predictions · features · metrics · figures · logs）
 └── scripts/
     ├── check_env.py              环境自检：conda 环境 + requirements.txt（依赖/GPU/镜像）
     ├── prefetch_assets.py        预热模型与数据集（Ubuntu/Windows 通用）
     ├── smoke_test.py             冒烟测试：结构 / 配置 / 契约 / 产物 / 管道前置
+    ├── final_test.py             最终验收测试：L0 静态 → L1 单元 → L2 数据 → L3 管道 → L4 判别评估
     ├── make_figures.py           生成开题报告插图（matplotlib，可重绘）
     ├── md2docx.py                Markdown → docx 转换（需可选依赖 python-docx）
     ├── download_data.sh          数据集下载（离线备选；bash，Windows 需 WSL/Git Bash）
@@ -91,6 +92,7 @@ python scripts/prefetch_assets.py               # 预热模型与数据集（首
 # 0) 自检与冒烟
 python scripts/check_env.py --report results/env_report.json    # 环境自检（退出码须为 0）
 python scripts/smoke_test.py --with-tests                       # 结构/配置/契约冒烟 + 单元测试
+python scripts/final_test.py                                    # 最终验收（L0–L4，默认全跑；--fast 只跑 L0–L2）
 
 # 1) 数据构造（A）
 python -m src.datasets.challenge_builder --config configs/challenge.yaml --seed 1000
@@ -112,9 +114,10 @@ python -m src.common.validate predictions results/predictions/w3-pipeline-13.jso
 python -m src.common.validate features    results/features/w3-pipeline-13.parquet
 ```
 
-**当前实现状态**：`src/common/`（契约、种子、IO、日志、校验）与 `src/features/overlap.py`、
-`src/evaluation/metrics.py` 已实现并通过单元测试；其余模块为骨架，调用时明确报
-`NotImplementedError` 并指向对应 WBS 任务（不会静默返回成功）。
+**当前实现状态**：`src/` 下 28 个业务模块（A 数据与检索、B 生成与特征、C 判别与评估）已全部实现，
+每个模块一个 CLI，均支持 `--dry-run`；契约与协作规范见 [`docs/接口契约.md`](docs/接口契约.md) 与
+[`docs/编码与协作规范.md`](docs/编码与协作规范.md)。交付前的端到端验收跑
+`python scripts/final_test.py`（缺重依赖的层级会记 SKIP 并说明安装方式，不会静默通过）。
 
 ## 随机种子
 
