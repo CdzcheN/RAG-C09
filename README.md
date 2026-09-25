@@ -61,7 +61,7 @@ RAG-C09/
     ├── make_figures.py           生成开题报告插图（matplotlib，可重绘）
     ├── md2docx.py                Markdown → docx 转换（需可选依赖 python-docx）
     ├── download_data.sh          数据集下载（离线备选；bash，Windows 需 WSL/Git Bash）
-    ├── verify_data.py            数据集本地副本校验（行数/字段/分布）
+    ├── verify_data.py            数据集副本校验：MANIFEST 哈希 + SQuAD 答案跨度对齐 + HotpotQA 全量字段/支持事实
     ├── download_refs.sh          下载参考文献 PDF
     ├── fetch_reference_metadata.py  抓取文献元数据（arXiv + OpenAlex + ACL）
     └── build_reference_docs.py   生成 BibTeX 与文献清单
@@ -146,6 +146,7 @@ python -m src.common.validate features    results/features/w3-pipeline-13.parque
 > 网络不稳时可设 `C09_OFFLINE=1`（或 `HF_HUB_OFFLINE=1`）让加载直接走 HF 缓存、不发请求；
 > 本进程内一旦在线加载失败，后续加载不再重复等待 huggingface_hub 的指数退避重试；
 > 联网取不到提交哈希时，`dataset_revision` 会从 HF 缓存目录反解（元信息里标 `revision_source=cache`）。
+> 数据完整性/准确性校验：`python scripts/verify_data.py`（全量写 `data/raw/VERIFY.json`）——当前结论 **16/16 通过**（5 个文件哈希与 MANIFEST 一致、SQuAD 107k 个答案跨度与原文 100% 对齐、HotpotQA 97852 行结构自洽且数量与上游基线一致）；已知上游瑕疵：HotpotQA 空句约 0.6%、`sent_id` 越界 23/97852，构造挑战样本时会自动跳过。
 
 元数据采集做了双重校验（标题完全一致 + 作者姓氏有交集），并由 `build_reference_docs.py` 再做一道
 “ACL 官方条目标题 == arXiv 标题”的交叉校验（当前全部通过）；未匹配到正式出版记录的条目一律
